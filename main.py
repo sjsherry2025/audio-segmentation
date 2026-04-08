@@ -2,23 +2,24 @@
 
 from silero_vad import load_silero_vad, read_audio
 from pathlib import Path
-
 from src.config.settings import SettingConfig
 from src.processors.normalizer import AudioNormalizer
 from src.processors.segmenter import AudioSegmenter
 from src.utils.logger import setup_logger
-from src.utils.file_utils import get_audio_files,get_unique_files
+from src.utils.file_utils import get_audio_files, get_unique_files, get_file_count, rename_folder
 from src.config.errors import FileError, AudioError
+from src.utils.time_utils import get_timestamp
 
 logger = setup_logger(__name__)
-
 
 class AudioSegmentationApp:
 
     def __init__(self, config: SettingConfig = None):
         self.config = config or SettingConfig()
         self.normalizer = AudioNormalizer(self.config.normalize)
-        self.segmenter = AudioSegmenter(self.config.vad, self.normalizer)
+        self.segmenter = (
+            AudioSegmenter(self.config.vad, self.config.segmenter, self.normalizer)
+        )
         self.model = None
 
     def setup(self):
@@ -38,13 +39,20 @@ class AudioSegmentationApp:
         timestamps = self.segmenter.detect_speech_segments(audio, sr, self.model)
         if not timestamps:
             raise AudioError(f"未检测到文件 {audio_path.name} 的语音")
+
+        # 应用时长限制处理
+        timestamps = self.segmenter.apply_duration_limit(timestamps, audio, sr, self.model, self.config.segmenter.enabled_double_split)
+
         # 创建输出目录
         output_dir = self.config.output_dir / audio_path.stem
         output_dir.mkdir(parents=True, exist_ok=True)
 
         segments_info = []
         for i, ts in enumerate(timestamps, 1):
-            segment, info = self.segmenter.extract_segment(audio, ts['start'], ts['end'], sr)
+            # segment, info = self.segmenter.extract_segment(audio, ts['start'], ts['end'], sr)
+            segment, info = self.segmenter.extract_and_process_segment(
+                audio, ts['start'], ts['end'], sr
+            )
             output_path = output_dir / f"{audio_path.stem}_seg_{i:04d}.wav"
             self.segmenter.save_segment(segment, output_path, sr)
             segments_info.append({
@@ -57,11 +65,20 @@ class AudioSegmentationApp:
         return len(timestamps), segments_info
 
     def run(self):
+        logger.info("audio segment program run is successful!")
         # 运行主流程
         if not self.config.input_dir.exists():
             raise FileError(f"{self.config.input_dir} 文件夹不存在")
+
+        if get_file_count(self.config.output_dir, self.config.supported_formats ) > 0:
+            # raise FileError(f"{self.config.output_dir} 目录已存在文件")
+            timestamp = get_timestamp()
+            new_name = f"{self.config.output_dir.stem}_bak_{timestamp}"
+            rename_folder(self.config.output_dir, new_name)
+            logger.info(f"输出目录已存在，备份目录目录: {self.config.output_dir}")
+
         # 获取所有文件
-        audio_files = get_unique_files(get_audio_files(self.config.input_dir,self.config.supported_formats))
+        audio_files = get_unique_files(get_audio_files(self.config.input_dir, self.config.supported_formats ))
 
         if not audio_files:
             raise FileError(f"{self.config.input_dir} 无音频源文件")
@@ -82,6 +99,7 @@ def main():
     config = SettingConfig()
     app = AudioSegmentationApp(config)
     app.run()
+    logger.info("audio segment task is completed!")
 
 
 if __name__ == "__main__":

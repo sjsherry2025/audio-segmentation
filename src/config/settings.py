@@ -5,7 +5,6 @@ from typing import Tuple
 @dataclass
 class VADConfig:
     # VAD 参数配置
-
     # 语音检测敏感度
     threshold: float = 0.5
     # 最小静音间隔
@@ -43,6 +42,20 @@ class NormalizeConfig:
         assert 0 < self.target_peak <= 1, "target_peak must be between 0 and 1"
         assert 0 < self.clipping_threshold  <= 1, "clipping_threshold must be between 0 and 1"
 
+@dataclass
+class SegmenterConfig:
+    # 分割音频配置
+    min_second: int = 3
+    # 目标峰值 音频的最大振幅上限
+    max_second: int = 8
+    # 启用多级分割（当音频大于当前长度时，继续分割直到符合要求）
+    enabled_double_split: bool = False
+
+    def to_dict(self):
+        return {
+            "min_second": self.min_second,
+            "max_second": self.max_second,
+        }
 
 @dataclass
 class SettingConfig:
@@ -52,6 +65,7 @@ class SettingConfig:
     supported_formats: Tuple[str, ...] = (".wav", ".mp3")
     vad: VADConfig = field(default_factory=VADConfig)
     normalize: NormalizeConfig = field(default_factory=NormalizeConfig)
+    segmenter: SegmenterConfig = field(default_factory=SegmenterConfig)
 
     def __post_init__(self):
         self.input_dir = Path(self.input_dir)
