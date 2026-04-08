@@ -1,157 +1,87 @@
-# 基于 Silero VAD 的批量音频按句子智能切分工具
+# 音频智能切分工具 - 基于 Silero VAD
 
-import logging
-import sys
+from silero_vad import load_silero_vad, read_audio
 from pathlib import Path
-from typing import List, Optional
 
-from silero_vad import load_silero_vad, read_audio, get_speech_timestamps
-import torchaudio
+from src.config.settings import SettingConfig
+from src.processors.normalizer import AudioNormalizer
+from src.processors.segmenter import AudioSegmenter
+from src.utils.logger import setup_logger
+from src.utils.file_utils import get_audio_files,get_unique_files
+from src.config.errors import FileError, AudioError
 
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-    handlers=[
-        logging.StreamHandler(sys.stdout),  # 输出到控制台
-        logging.FileHandler('segment.log', encoding='utf-8')  # 同时写入文件
-    ]
-)
-logger = logging.getLogger(__name__)
-
-INPUT_DIR = "./input"
-OUTPUT_DIR = "./output"
-SUPPORTED_FORMATS = (".wav", ".mp3")
-
-# VAD 参数
-VAD_CONFIG = {
-    "threshold": 0.5,  # 语音阈值（0-1），环境噪音大时调高
-    "min_silence_duration_ms": 500,  # 最小静音时长（毫秒），决定切分点
-    "min_speech_duration_ms": 500,  # 最小语音片段时长（毫秒）
-    "speech_pad_ms": 100,  # 片段前后保留时长（毫秒）
-}
-
-class AudioProcessingError(Exception):
-    pass
+logger = setup_logger(__name__)
 
 
-def process_single_audio(audio_path: Path, model, output_folder: Path) -> int:
-    try:
-        # 读取音频
+class AudioSegmentationApp:
+
+    def __init__(self, config: SettingConfig = None):
+        self.config = config or SettingConfig()
+        self.normalizer = AudioNormalizer(self.config.normalize)
+        self.segmenter = AudioSegmenter(self.config.vad, self.normalizer)
+        self.model = None
+
+    def setup(self):
+        # 初始化设置  创建输出目录
+        self.config.output_dir.mkdir(parents=True, exist_ok=True)
+        # 加载 VAD 模型
+        logger.info("正在加载 Silero VAD 模型...")
+        self.model = load_silero_vad()
+        logger.info("模型加载完成")
+
+    def process_file(self, audio_path: Path) -> tuple:
+        # 处理单个文件
         audio = read_audio(str(audio_path))
+        # 采样率（Sample Rate）
         sr = 16000
-        logger.debug(f"  音频时长: {len(audio) / sr:.2f}秒, 采样率: {sr}Hz")
-    except Exception as e:
-        raise AudioProcessingError(f"读取音频失败 {audio_path.name}: {e}") from e
+        # 检测语音片段
+        timestamps = self.segmenter.detect_speech_segments(audio, sr, self.model)
+        if not timestamps:
+            raise AudioError(f"未检测到文件 {audio_path.name} 的语音")
+        # 创建输出目录
+        output_dir = self.config.output_dir / audio_path.stem
+        output_dir.mkdir(parents=True, exist_ok=True)
 
-    # 检测语音片段
-    try:
-        timestamps = get_speech_timestamps(
-            audio,
-            model,
-            threshold=VAD_CONFIG["threshold"],
-            sampling_rate=sr,
-            min_speech_duration_ms=VAD_CONFIG["min_speech_duration_ms"],
-            min_silence_duration_ms=VAD_CONFIG["min_silence_duration_ms"],
-            speech_pad_ms=VAD_CONFIG["speech_pad_ms"],
-            return_seconds=False
-        )
-    except Exception as e:
-        raise AudioProcessingError(f"语音检测失败 {audio_path.name}: {e}") from e
+        segments_info = []
+        for i, ts in enumerate(timestamps, 1):
+            segment, info = self.segmenter.extract_segment(audio, ts['start'], ts['end'], sr)
+            output_path = output_dir / f"{audio_path.stem}_seg_{i:04d}.wav"
+            self.segmenter.save_segment(segment, output_path, sr)
+            segments_info.append({
+                "index": i,
+                "file_name": output_path.name,
+                "duration_sec": info["duration_sec"],
+                "original_rms": info["original_rms"],
+                "normalized_rms": info["normalized_rms"]
+            })
+        return len(timestamps), segments_info
 
-    # 创建该音频的输出子目录
-    audio_name = audio_path.stem
-    audio_output_dir = output_folder / audio_name
-    audio_output_dir.mkdir(parents=True, exist_ok=True)
+    def run(self):
+        # 运行主流程
+        if not self.config.input_dir.exists():
+            raise FileError(f"{self.config.input_dir} 文件夹不存在")
+        # 获取所有文件
+        audio_files = get_unique_files(get_audio_files(self.config.input_dir,self.config.supported_formats))
 
-    # 保存每个片段
-    for i, seg in enumerate(timestamps):
-        start = seg['start']
-        end = seg['end']
-        segment = audio[start:end]
+        if not audio_files:
+            raise FileError(f"{self.config.input_dir} 无音频源文件")
 
-        duration = (end - start) / sr
-        output_path = audio_output_dir / f"{audio_name}_seg_{i:04d}.wav"
-
-        # 添加 batch 维度（torchaudio.save 需要 [channels, samples]）
-        if segment.dim() == 1:
-            segment = segment.unsqueeze(0)
-
-        try:
-            torchaudio.save(str(output_path), segment.cpu(), sr)
-            logger.debug(f"    保存: {output_path.name} ({duration:.2f}秒)")
-        except Exception as e:
-            raise AudioProcessingError(f"语音保存失败 {audio_path.name}: {e}") from e
-    return 0
-
-
-def get_audio_files(input_path: Path) -> List[Path]:
-    audio_files = []
-    for ext in SUPPORTED_FORMATS:
-        audio_files.extend(input_path.glob(f"*{ext}"))
-        audio_files.extend(input_path.glob(f"*{ext.upper()}"))
-    # 去重并排序
-    return sorted(set(audio_files))
+        # 初始化
+        self.setup()
+        # run
+        for idx, audio_file in enumerate(audio_files, 1):
+            logger.info(f"[{idx}/{len(audio_files)}] 处理: {audio_file.name}")
+            try:
+                self.process_file(audio_file)
+            except Exception as e:
+                raise AudioError()
 
 
 def main():
-    input_path = Path(INPUT_DIR)
-    output_path = Path(OUTPUT_DIR)
-    # 检查输入文件夹
-    if not input_path.exists():
-        logger.error(f"输入文件夹不存在: {INPUT_DIR}")
-        sys.exit(1)
-
-    if not input_path.is_dir():
-        logger.error(f"输入路径不是文件夹: {INPUT_DIR}")
-        sys.exit(1)
-
-    # 获取音频文件列表
-    audio_files = get_audio_files(input_path)
-
-    if not audio_files:
-        logger.warning(f"在 {INPUT_DIR} 中没有找到支持的音频文件")
-        logger.info(f"支持的格式: {SUPPORTED_FORMATS}")
-        sys.exit(0)
-
-    logger.info("=" * 60)
-    logger.info(f"批量音频切分工具启动")
-    logger.info(f"输入目录: {INPUT_DIR}")
-    logger.info(f"输出目录: {OUTPUT_DIR}")
-    logger.info(f"找到 {len(audio_files)} 个音频文件")
-    logger.info(f"VAD配置: threshold={VAD_CONFIG['threshold']}, "
-                f"min_silence={VAD_CONFIG['min_silence_duration_ms']}ms")
-    logger.info("=" * 60)
-
-    # 加载模型
-    try:
-        logger.info("正在加载 Silero VAD 模型...")
-        model = load_silero_vad()
-        logger.info("模型加载完成")
-    except Exception as e:
-        logger.error(f"模型加载失败: {e}")
-        sys.exit(1)
-
-    # 处理每个音频
-    total_segments = 0
-    success_count = 0
-    failed_files = []
-
-    for audio_file in audio_files:
-        logger.info(f"处理文件: {audio_file.name}, ")
-        try:
-            seg_count = process_single_audio(audio_file, model, output_path)
-            if seg_count > 0:
-                total_segments += seg_count
-                success_count += 1
-            elif seg_count == 0:
-                # 没有检测到语音，也算处理成功（只是没有片段）
-                success_count += 1
-        except AudioProcessingError as e:
-            logger.error(str(e))
-            failed_files.append(audio_file.name)
-        except Exception as e:
-            logger.error(f"处理 {audio_file.name} 时发生未预期错误: {e}", exc_info=True)
-            failed_files.append(audio_file.name)
+    # 入口函数
+    config = SettingConfig()
+    app = AudioSegmentationApp(config)
+    app.run()
 
 
 if __name__ == "__main__":
