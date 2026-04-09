@@ -1,15 +1,15 @@
 import logging
 import sys
 
-def setup_logger(name: str = __name__, log_file: str = "segment.log") -> logging.Logger:
+def setup_logger(name: str = __name__, log_file: str = "src/segment.log") -> logging.Logger:
     logger = logging.getLogger(name)
 
     if logger.handlers:
         return logger
-    logger.setLevel(logging.DEBUG)
+    logger.setLevel(logging.INFO)
     # 格式化
     formatter = logging.Formatter(
-        '%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+        '%(asctime)s - %(levelname)s - %(message)s'
     )
 
     # 控制台 handler

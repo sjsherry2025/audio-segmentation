@@ -41,7 +41,8 @@ class AudioSegmenter:
             clipping_threshold=self.normalizer.config.clipping_threshold
         )
 
-    def apply_duration_limit(self, timestamps: List[dict], audio: torch.Tensor, sr: int, model, enabled_double_split: bool ) -> List[dict]:
+    def apply_duration_limit(self, timestamps: List[dict], audio: torch.Tensor, sr: int, model,
+                             enabled_double_split: bool, factor ) -> List[dict]:
         # 应用时长限制：
         # 1. 过长的片段 → 递归用 VAD 继续切分
         # 2. 过短的片段 → 丢弃
@@ -59,7 +60,7 @@ class AudioSegmenter:
             "speech_pad_ms": self.vad_config.speech_pad_ms,
         }
         # 1. 拆分过长的片段
-        split_result = split_long_segments(timestamps, audio, sr, model, vad_config, max_dur, enabled_double_split )
+        split_result = split_long_segments(timestamps, audio, sr, model, vad_config, max_dur, enabled_double_split, factor )
         # 2. 丢弃过短的片段
         final_result = filter_by_duration(split_result, sr, min_dur, max_dur)
         # 3. 返回

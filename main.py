@@ -1,10 +1,15 @@
 # 音频智能切分工具 - 基于 Silero VAD
+import gc
 
+from anyio import sleep_until
 from silero_vad import load_silero_vad, read_audio
 from pathlib import Path
+from src.utils.progress_utils import progressBar
+import time
 from src.config.settings import SettingConfig
 from src.processors.normalizer import AudioNormalizer
 from src.processors.segmenter import AudioSegmenter
+from src.utils.asr_utils import batch_transcribe, load_asr_model
 from src.utils.logger import setup_logger
 from src.utils.file_utils import get_audio_files, get_unique_files, get_file_count, rename_folder
 from src.config.errors import FileError, AudioError
@@ -16,11 +21,13 @@ class AudioSegmentationApp:
 
     def __init__(self, config: SettingConfig = None):
         self.config = config or SettingConfig()
+        self.whisper = config.whisper
         self.normalizer = AudioNormalizer(self.config.normalize)
         self.segmenter = (
             AudioSegmenter(self.config.vad, self.config.segmenter, self.normalizer)
         )
         self.model = None
+        self.asr = None
 
     def setup(self):
         # 初始化设置  创建输出目录
@@ -28,7 +35,16 @@ class AudioSegmentationApp:
         # 加载 VAD 模型
         logger.info("正在加载 Silero VAD 模型...")
         self.model = load_silero_vad()
+        logger.info("正在加载 ASR 模型...")
+        self.asr = load_asr_model(self.whisper)
         logger.info("模型加载完成")
+        logger.info("正在启动主程序...")
+
+    def close(self):
+        # 关闭资源
+        del self.model
+        del self.asr
+        gc.collect()
 
     def process_file(self, audio_path: Path) -> tuple:
         # 处理单个文件
@@ -41,7 +57,8 @@ class AudioSegmentationApp:
             raise AudioError(f"未检测到文件 {audio_path.name} 的语音")
 
         # 应用时长限制处理
-        timestamps = self.segmenter.apply_duration_limit(timestamps, audio, sr, self.model, self.config.segmenter.enabled_double_split)
+        timestamps = self.segmenter.apply_duration_limit(timestamps, audio, sr, self.model,
+                                    self.config.segmenter.enabled_double_split, self.config.segmenter.factor)
 
         # 创建输出目录
         output_dir = self.config.output_dir / audio_path.stem
@@ -68,14 +85,15 @@ class AudioSegmentationApp:
         logger.info("audio segment program run is successful!")
         # 运行主流程
         if not self.config.input_dir.exists():
-            raise FileError(f"{self.config.input_dir} 文件夹不存在")
+            # raise FileError(f"{self.config.input_dir} 文件夹不存在")
+            self.config.input_dir.mkdir(parents=True, exist_ok=True)
 
         if get_file_count(self.config.output_dir, self.config.supported_formats ) > 0:
             # raise FileError(f"{self.config.output_dir} 目录已存在文件")
             timestamp = get_timestamp()
             new_name = f"{self.config.output_dir.stem}_bak_{timestamp}"
             rename_folder(self.config.output_dir, new_name)
-            logger.info(f"输出目录已存在，备份目录目录: {self.config.output_dir}")
+            logger.info(f"输出目录已存在，备份目录为: {new_name}")
 
         # 获取所有文件
         audio_files = get_unique_files(get_audio_files(self.config.input_dir, self.config.supported_formats ))
@@ -85,14 +103,19 @@ class AudioSegmentationApp:
 
         # 初始化
         self.setup()
-        # run
-        for idx, audio_file in enumerate(audio_files, 1):
-            logger.info(f"[{idx}/{len(audio_files)}] 处理: {audio_file.name}")
-            try:
-                self.process_file(audio_file)
-            except Exception as e:
-                raise AudioError()
 
+        # run
+        with progressBar(len(audio_files)) as progress:
+            for idx, audio_file in enumerate(audio_files, 1):
+                try:
+                    segment_count, segments = self.process_file(audio_file)
+                except Exception as e:
+                    raise AudioError()
+                progress()
+                print(f"音频 {audio_file.name} 已切分完成, 片段数: {segment_count}")
+
+        # logger.info(f"正在进行音频识别......")
+        # batch_transcribe(self.asr, self.config.whisper, get_audio_files(self.config.output_dir, self.config.supported_formats ))
 
 def main():
     # 入口函数

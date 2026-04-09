@@ -1,16 +1,18 @@
+import os
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Tuple
+from typing import Optional, Any
 
 @dataclass
 class VADConfig:
     # VAD 参数配置
     # 语音检测敏感度
-    threshold: float = 0.5
+    threshold: float = 0.50
     # 最小静音间隔
-    min_silence_duration_ms: int = 500
+    min_silence_duration_ms: int = 720
     # 最小语音片段时长
-    min_speech_duration_ms: int = 500
+    min_speech_duration_ms: int = 600
     # speech_pad_ms
     speech_pad_ms: int = 200
 
@@ -21,7 +23,6 @@ class VADConfig:
             "min_speech_duration_ms": self.min_speech_duration_ms,
             "speech_pad_ms": self.speech_pad_ms,
         }
-
 
 @dataclass
 class NormalizeConfig:
@@ -47,25 +48,68 @@ class SegmenterConfig:
     # 分割音频配置
     min_second: int = 3
     # 目标峰值 音频的最大振幅上限
-    max_second: int = 8
+    max_second: int = 16
     # 启用多级分割（当音频大于当前长度时，继续分割直到符合要求）
-    enabled_double_split: bool = False
+    enabled_double_split: bool = True
+    # 多级分割的降级切分因子
+    factor: float = 0.86
 
     def to_dict(self):
         return {
             "min_second": self.min_second,
             "max_second": self.max_second,
+            "enabled_double_split": self.enabled_double_split,
+            "factor": self.factor,
+        }
+
+
+@dataclass
+class FasterWhisperConfig:
+    # Faster-Whisper 语音识别配置
+    # 是否启用
+    enabled: bool = True
+    # 模型选择 (tiny, base, small, medium, large)
+    model: str = "medium"
+    # 设备 (cpu, cuda)
+    device: str = "cpu"
+    # 量化类型 (int8, float16, float32)
+    compute_type: str = "int8"
+    # CPU 线程数
+    cpu_threads: int = os.cpu_count() // 2 or 4
+    # 语言 (zh, en, None=自动检测)
+    language: Optional[str] = "zh"
+    # 识别任务 (transcribe, translate)
+    task: str = "transcribe"
+    # 初始提示（提高特定词准确率）
+    initial_prompt: Optional[str] = None
+    # 自动保存文本
+    enables_auto_save: bool = True
+    output_dir: Optional[Path] = Path("./resources/asr")
+
+    def to_dict(self):
+        return {
+            "enabled": self.enabled,
+            "model": self.model,
+            "device": self.device,
+            "compute_type": self.compute_type,
+            "cpu_threads": self.cpu_threads,
+            "language": self.language,
+            "task": self.task,
+            "initial_prompt": self.initial_prompt,
+            "enables_auto_save": self.enables_auto_save,
+            "output_dir": str(self.output_dir),
         }
 
 @dataclass
 class SettingConfig:
     # 应用主配置
-    input_dir: Path = Path("./input")
-    output_dir: Path = Path("./output")
+    input_dir: Path = Path("./resources/input")
+    output_dir: Path = Path("./resources/output")
     supported_formats: Tuple[str, ...] = (".wav", ".mp3")
     vad: VADConfig = field(default_factory=VADConfig)
     normalize: NormalizeConfig = field(default_factory=NormalizeConfig)
     segmenter: SegmenterConfig = field(default_factory=SegmenterConfig)
+    whisper: FasterWhisperConfig = field(default_factory=FasterWhisperConfig)
 
     def __post_init__(self):
         self.input_dir = Path(self.input_dir)

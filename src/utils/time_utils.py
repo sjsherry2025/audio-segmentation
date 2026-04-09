@@ -3,6 +3,10 @@
 from datetime import datetime, timezone, timedelta
 import time
 
+from src.utils.logger import setup_logger
+
+logger = setup_logger(__name__)
+
 def get_time() -> str:
     # 获取当前时间字符串
     return datetime.now().strftime("%Y-%m-%d %H:%M:%S")

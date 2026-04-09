@@ -1,13 +1,12 @@
-import logging
-
 import torch
 import torchaudio
 from pathlib import Path
 from typing import Dict, Any
 from typing import List, Tuple
 from silero_vad import get_speech_timestamps
+from src.utils.logger import setup_logger
 
-logger = logging.getLogger(__name__)
+logger = setup_logger(__name__)
 
 def get_audio_duration(audio: torch.Tensor, sr: int) -> float:
     # 获取音频时长（秒） =  采样点数 / 采样率
@@ -49,14 +48,10 @@ def extract_segment( audio: torch.Tensor, start: int, end: int, sr: int,
         "normalized_rms": normalized_stats["rms"]
     }
 
-
 def save_segment(segment: torch.Tensor, output_path: Path, sr: int):
     # 保存音频片段
     segment = ensure_channels(segment)
     torchaudio.save(str(output_path), segment.cpu(), sr)
-
-
-
 
 def filter_by_duration(timestamps: List[Dict], sr: int, min_duration: float, max_duration: float) -> List[Dict]:
     # 丢弃时长不在范围内的片段
@@ -66,8 +61,8 @@ def filter_by_duration(timestamps: List[Dict], sr: int, min_duration: float, max
     ]
 
 
-def split_long_segments(timestamps: List[Dict], audio: torch.Tensor, sr: int,
-        vad_model,vad_config: dict, max_duration: float , enabled_double_split: bool = False) -> List[Dict]:
+def split_long_segments(timestamps: List[Dict], audio: torch.Tensor, sr: int, vad_model,vad_config: dict,
+                        max_duration: float , enabled_double_split: bool , factor: float ) -> List[Dict]:
     # 拆分过长的片段
     result = []
 
@@ -80,22 +75,33 @@ def split_long_segments(timestamps: List[Dict], audio: torch.Tensor, sr: int,
 
         if duration <= max_duration:
             result.append(ts)
-            logger.info(f"正常片段{ts.keys()}")
         elif not enabled_double_split:
             result.append(ts)
-            logger.info(f"未启用用多级分割, 已跳过该音频")
+            logger.info(f"未启用用多级分割, 已跳过该片段")
         else:
             segment_audio = audio[start:end]
-            logger.info(f"过长片段{ts.keys()}")
+            logger.debug(f"过长片段，降级切分中")
+
             # 递归调用 VAD 检测
+            next_config = {
+                "threshold": round(vad_config["threshold"] * factor, 2),
+                "min_speech_duration_ms": int(vad_config["min_speech_duration_ms"] * factor),
+                "min_silence_duration_ms": int(vad_config["min_silence_duration_ms"] * factor),
+                "speech_pad_ms": int(vad_config["speech_pad_ms"] * factor)
+            }
+            # 避免过深分割
+            if next_config["threshold"] <= 0.20:
+                result.append(ts)
+                continue
+
             sub_timestamps = get_speech_timestamps(
                 segment_audio,
                 vad_model,
-                threshold=vad_config["threshold"],
+                threshold=next_config["threshold"],
                 sampling_rate=sr,
-                min_speech_duration_ms=vad_config["min_speech_duration_ms"],
-                min_silence_duration_ms=vad_config["min_silence_duration_ms"],
-                speech_pad_ms=vad_config["speech_pad_ms"],
+                min_speech_duration_ms=next_config["min_speech_duration_ms"],
+                min_silence_duration_ms=next_config["min_silence_duration_ms"],
+                speech_pad_ms=next_config["speech_pad_ms"],
                 return_seconds=False
             )
 
@@ -103,10 +109,10 @@ def split_long_segments(timestamps: List[Dict], audio: torch.Tensor, sr: int,
             for sub_ts in sub_timestamps:
                 sub_ts['start'] += start
                 sub_ts['end'] += start
-
                 # 调试
-                logger.debug(
-                    f"切分过长片段: {sub_ts['start'] / sr:.2f}s - {sub_ts['end'] / sr:.2f}s")
+                logger.debug(f"切分过长片段: "
+                             f"{sub_ts['start'] / sr:.2f}s - {sub_ts['end'] / sr:.2f}s" 
+                             f"(时长: {(sub_ts['end'] - sub_ts['start']) / sr:.2f}s)")
 
             # 递归处理子片段（可能还有更长的）
             # sub_result = split_long_segments(
@@ -117,8 +123,8 @@ def split_long_segments(timestamps: List[Dict], audio: torch.Tensor, sr: int,
                 sub_duration = (sub_ts['end'] - sub_ts['start']) / sr
                 if sub_duration > max_duration:
                     # 还过长，继续递归
-                    sub_result = split_long_segments(
-                        [sub_ts], audio, sr, vad_model, vad_config, max_duration
+                    sub_result = split_long_segments([sub_ts], audio, sr, vad_model, next_config,
+                                                     max_duration, enabled_double_split, factor
                     )
                     result.extend(sub_result)
                 else:

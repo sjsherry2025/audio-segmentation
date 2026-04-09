@@ -2,6 +2,10 @@
 
 from pathlib import Path
 from typing import List, Tuple
+from src.utils.logger import setup_logger
+from src.config.errors import FileError
+
+logger = setup_logger(__name__)
 
 def get_file_count(input_dir: Path, supported_formats: Tuple[str, ...]) -> int:
     # 递归获取所有音频文件的数量
@@ -31,11 +35,17 @@ def get_unique_files(audio_files: List[Path]) -> List[Path]:
 def rename_folder(old_path: Path, new_name: str) -> Path:
     # 修改文件夹名称
     new_path = old_path.parent / new_name
-    old_path.rename(new_path)
+    try:
+        old_path.rename(new_path)
+    except Exception as e:
+        raise FileError(f"文件夹重命名失败: {e}")
     return new_path
 
 def rename_file(old_path: Path, new_name: str) -> Path:
     # 修改文件名称
     new_path = old_path.parent / f"{new_name}{old_path.suffix}"
-    old_path.rename(new_path)
+    try:
+        old_path.rename(new_path)
+    except Exception as e:
+        raise FileError(f"文件重命名失败: {e}")
     return new_path

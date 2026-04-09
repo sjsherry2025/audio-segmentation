@@ -24,7 +24,17 @@ class FileError(BasesError):
     def default_message(self) -> str:
         return "文件操作失败"
 
+class AsrError(BasesError):
+    @property
+    def default_message(self) -> str:
+        return "音频识别失败"
+
 class CaseError(BasesError):
     @property
     def default_message(self) -> str:
         return "异常的条件分支"
+
+class NotEnableError(BasesError):
+    @property
+    def default_message(self) -> str:
+        return "未启用相应的功能"
