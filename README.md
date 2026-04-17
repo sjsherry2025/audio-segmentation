@@ -29,16 +29,6 @@
   <img width="100%" alt="image" src="https://raw.githubusercontent.com/sjsherry2025/audio-segmentation/master/src/assets/image2.png" />
 </div>
 
-## 🚀 快速开始
-
-### 环境要求
-
-| 依赖 | 版本 |
-|------|------|
-| Python | >= 3.10 |
-| PyTorch | >= 1.12.0 |
-| Silero VAD | >= 0.1.0 |
-| SoundFile | >= 0.10.0 |
 | Librosa | >= 0.9.0 |
 
 ### 安装步骤
